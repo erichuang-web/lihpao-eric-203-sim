@@ -40,6 +40,8 @@
   .play button#pp{ width:40px; height:40px; border-radius:50%; border:1px solid var(--red); background:var(--red); color:#fff; font-size:15px; cursor:pointer; }
   .play .spd button{ border:1px solid var(--line); background:#1b1e25; color:var(--mut); font:inherit; font-size:12px; padding:5px 9px; cursor:pointer; border-radius:3px; }
   .play .spd button[aria-pressed=true]{ background:#2a2e37; color:#fff; }
+  .play .fl{ border:1px solid var(--line); background:#1b1e25; color:var(--mut); font:inherit; font-size:12px; font-weight:700; padding:6px 11px; cursor:pointer; border-radius:4px; }
+  .play .fl[aria-pressed=true]{ background:var(--red); border-color:var(--red); color:#fff; }
   .scrub{ flex:1 1 160px; }
   .read{ display:flex; gap:18px; flex-wrap:wrap; font-variant-numeric:tabular-nums; font-size:13px; }
   .read b{ font-size:17px; font-style:italic; }
@@ -75,6 +77,7 @@
         <button data-sp="1" aria-pressed="true">1×</button>
         <button data-sp="2" aria-pressed="false">2×</button>
       </div>
+      <button id="follow" class="fl" aria-pressed="false" title="貼著車子放大跟拍，像在玩遊戲">🎮 跟車視角</button>
       <input class="scrub" id="scrub" type="range" min="0" max="1000" value="0" aria-label="時間軸">
       <span id="clock">0.0s</span>
     </div>
@@ -154,7 +157,7 @@ function tipLines(t,title,rows){ t.hidden=false; t.innerHTML='<div style="font-w
 function placeTip(el,t,mx,my){ const w=el.clientWidth; let x=mx+12,y=my+12; if(x+t.offsetWidth>w)x=mx-t.offsetWidth-12; if(x<0)x=4; t.style.left=x+'px'; t.style.top=y+'px'; }
 
 const at = d => { let lo=0,hi=TR.length-1; if(d<=TR[0].d)return 0; if(d>=TR[hi].d)return hi; while(hi-lo>1){const m=(lo+hi)>>1; if(TR[m].d<d)lo=m; else hi=m;} return lo; };
-const state = { mode:'spd', play:{t:0,max:(LAP.sec||TR[TR.length-1].t),playing:false,speed:1} };
+const state = { mode:'spd', follow:false, play:{t:0,max:(LAP.sec||TR[TR.length-1].t),playing:false,speed:1} };
 
 // ---- map ----
 let rxMap=null, mapZoom=null;
@@ -214,8 +217,19 @@ function drawMap(){
   // start
   const sp=P[0]; svg.append('circle').attr('cx',sp.X).attr('cy',sp.Y).attr('r',6).attr('fill',COL.g).attr('stroke','#fff');
   const pointAt=d=>{const i=at(d);const a=P[i],b=P[Math.min(P.length-1,i+1)];const f=(d-a.d)/((b.d-a.d)||1);return {X:a.X+(b.X-a.X)*f,Y:a.Y+(b.Y-a.Y)*f};};
-  const car=svg.append('g'); car.append('circle').attr('r',14).attr('fill',COL.r).attr('opacity',.2); car.append('circle').attr('r',8).attr('fill',COL.r).attr('stroke','#fff').attr('stroke-width',2);
-  rxMap={pointAt,car:car.node()};
+  // 行進方向（度）：用前後點算，過彎時車頭會跟著左右轉
+  const headAt=d=>{const i=at(d);const a=P[Math.max(0,i-2)],b=P[Math.min(P.length-1,i+2)];return Math.atan2(b.Y-a.Y,b.X-a.X)*180/Math.PI;};
+  // 俯視小賽車（車頭朝 +X，靠 rotate 轉向）
+  const car=svg.append('g'); const cg=car.append('g');
+  cg.append('ellipse').attr('rx',17).attr('ry',10).attr('fill',COL.r).attr('opacity',.16);
+  cg.append('rect').attr('x',-7).attr('y',-7.5).attr('width',5).attr('height',4).attr('rx',1).attr('fill','#0a0a0c');  // 後左輪
+  cg.append('rect').attr('x',-7).attr('y',3.5).attr('width',5).attr('height',4).attr('rx',1).attr('fill','#0a0a0c');   // 後右輪
+  cg.append('rect').attr('x',5).attr('y',-7.5).attr('width',4.5).attr('height',3.5).attr('rx',1).attr('fill','#0a0a0c'); // 前左輪
+  cg.append('rect').attr('x',5).attr('y',4).attr('width',4.5).attr('height',3.5).attr('rx',1).attr('fill','#0a0a0c');    // 前右輪
+  cg.append('path').attr('d','M-10,-5.5 L8,-5.5 L14,0 L8,5.5 L-10,5.5 Z').attr('fill',COL.r).attr('stroke','#fff').attr('stroke-width',1.6).attr('stroke-linejoin','round'); // 車身＋尖車頭
+  cg.append('rect').attr('x',-4).attr('y',-3).attr('width',6).attr('height',6).attr('rx',2).attr('fill','#0b0c0f');  // 座艙
+  cg.append('rect').attr('x',-10).attr('y',-5).attr('width',2.5).attr('height',10).attr('rx',1).attr('fill','#111').attr('stroke','#444').attr('stroke-width',.5); // 尾翼
+  rxMap={pointAt,headAt,carOuter:car.node(),carInner:cg.node()};
   // 把畫布撐到包含路線＋所有往外推的標籤，且讓「路線」置中（以路線中心對稱撐開，美觀）
   const vb=svg.node().getBBox(); const M=8;
   let tx0=1e18,tx1=-1e18,ty0=1e18,ty1=-1e18; for(const q of P){ if(q.X<tx0)tx0=q.X; if(q.X>tx1)tx1=q.X; if(q.Y<ty0)ty0=q.Y; if(q.Y>ty1)ty1=q.Y; }
@@ -224,9 +238,9 @@ function drawMap(){
   const VB=[cx-hw-M, cy-hh-M, 2*(hw+M), 2*(hh+M)];
   rootSvg.attr('viewBox',VB.join(' '));
   el.style.minHeight=Math.round(W*VB[3]/VB[2])+'px';
-  const zoom=d3.zoom().scaleExtent([1,8]).translateExtent([[VB[0],VB[1]],[VB[0]+VB[2],VB[1]+VB[3]]]).extent([[VB[0],VB[1]],[VB[0]+VB[2],VB[1]+VB[3]]]).on('zoom',ev=>svg.attr('transform',ev.transform));
-  rootSvg.call(zoom).on('dblclick.zoom',null).on('dblclick',()=>rootSvg.transition().duration(300).call(zoom.transform,d3.zoomIdentity));
-  mapZoom={root:rootSvg,zoom:zoom};
+  const zoom=d3.zoom().scaleExtent([1,9]).on('zoom',ev=>svg.attr('transform',ev.transform));
+  rootSvg.call(zoom).on('dblclick.zoom',null).on('dblclick',()=>{state.follow=false;document.getElementById('follow')&&document.getElementById('follow').setAttribute('aria-pressed','false');rootSvg.transition().duration(300).call(zoom.transform,d3.zoomIdentity);});
+  mapZoom={root:rootSvg,zoom:zoom,VB:VB};
   // legend
   const L=document.getElementById('leg');
   if(mode==='spd') L.innerHTML='<span>顏色＝時速（藍慢→紅快）</span>';
@@ -281,7 +295,8 @@ function renderPlay(){ const t=Math.min(state.play.t,Tmax), d=distAt(t);
   document.getElementById('rb').textContent=Math.round(atD(d,'brk'));
   document.getElementById('clock').textContent=f1(t)+'s';
   const sc=document.getElementById('scrub'); if(document.activeElement!==sc) sc.value=String(Math.round(t/Tmax*1000));
-  if(rxMap){ const p=rxMap.pointAt(d); rxMap.car.setAttribute('transform','translate('+p.X+','+p.Y+')'); }
+  if(rxMap){ const p=rxMap.pointAt(d); rxMap.carOuter.setAttribute('transform','translate('+p.X+','+p.Y+')'); rxMap.carInner.setAttribute('transform','rotate('+rxMap.headAt(d)+')');
+    if(state.follow && mapZoom){ const k=4.2, V=mapZoom.VB; const tx=(V[0]+V[2]/2)-k*p.X, ty=(V[1]+V[3]/2)-k*p.Y; mapZoom.root.call(mapZoom.zoom.transform, d3.zoomIdentity.translate(tx,ty).scale(k)); } }
   if(speedChart) speedChart.setCursor(d); if(pedalChart) pedalChart.setCursor(d);
 }
 let last=0; function loop(ts){ if(!last)last=ts; const dt=(ts-last)/1000; last=ts;
@@ -291,6 +306,9 @@ document.getElementById('pp').addEventListener('click',function(){ if(state.play
 document.querySelectorAll('.spd button').forEach(b=>b.addEventListener('click',()=>{ state.play.speed=+b.dataset.sp; document.querySelectorAll('.spd button').forEach(x=>x.setAttribute('aria-pressed',String(x===b))); }));
 document.getElementById('scrub').addEventListener('input',function(){ state.play.playing=false; document.getElementById('pp').textContent='▶'; state.play.t=(+this.value)/1000*Tmax; renderPlay(); });
 document.querySelectorAll('.modes button').forEach(b=>b.addEventListener('click',()=>{ state.mode=b.dataset.mode; document.querySelectorAll('.modes button').forEach(x=>x.setAttribute('aria-pressed',String(x===b))); drawMap(); }));
+document.getElementById('follow').addEventListener('click',function(){ state.follow=!state.follow; this.setAttribute('aria-pressed',String(state.follow));
+  if(state.follow){ renderPlay(); } else if(mapZoom){ mapZoom.root.transition().duration(350).call(mapZoom.zoom.transform,d3.zoomIdentity); }
+  document.getElementById('map').scrollIntoView({behavior:'smooth',block:'center'}); });
 (function(){ const zb=(f)=>()=>{ if(!mapZoom)return; mapZoom.root.transition().duration(200).call(f); };
   const zin=document.getElementById('zin'),zout=document.getElementById('zout'),zrst=document.getElementById('zrst');
   if(zin) zin.addEventListener('click',zb(s=>mapZoom.zoom.scaleBy(s,1.6)));
